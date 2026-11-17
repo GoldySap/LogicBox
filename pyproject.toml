@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "universal-engine"
+version = "1.0.0"
+description = "Target-agnostic node, signal, and rendering architecture."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = []  # Zero core dependencies!
+
+[project.optional-dependencies]
+terminal = []       # Standard library only
+pygame = ["pygame>=2.5.0"]
+opengl = ["moderngl>=5.8.0", "PyGLM>=2.7.0"]
+all = ["pygame>=2.5.0", "moderngl>=5.8.0", "PyGLM>=2.7.0"]
