@@ -106,13 +106,17 @@ class Signal:
                 if conn.filter_fn and not conn.filter_fn(*args, **kwargs):
                     continue
             except Exception as e:
-                logger.error(f"[Signal Error] Filter guard failed on signal '{self.name}': {e}")
+                self.error_handler(e, self.name, conn.filter_fn)
                 continue
 
             try:
                 if inspect.iscoroutinefunction(cb):
                     logger.warning(f"[Signal Warning] Async listener {cb} called synchronously on signal '{self.name}'. Use emit_async().")
-                cb(*args, **kwargs)
+                    cb_object = cb(*args, **kwargs)
+                    if hasattr(cb_object, "close"):
+                        cb_object.close()
+                else:
+                    cb(*args, **kwargs)
             except Exception as e:
                 self.error_handler(e, self.name, cb)
 
@@ -141,7 +145,7 @@ class Signal:
                 if conn.filter_fn and not conn.filter_fn(*args, **kwargs):
                     continue
             except Exception as e:
-                logger.error(f"[Signal Error] Filter guard failed on signal '{self.name}': {e}")
+                self.error_handler(e, self.name, conn.filter_fn)
                 continue
 
             try:
@@ -211,7 +215,10 @@ class EventBus:
         """Synchronously publish to an exact channel and any matching wildcard patterns."""
         with self._lock:
             for hook in self._pre_publish_hooks:
-                hook(channel, args, kwargs)
+                try:
+                    hook(channel, args, kwargs)
+                except Exception as e:
+                    self._report_hook_error("pre-publish", channel, e)
 
             # 1. Emit to exact channel match
             exact_sig = self._channels.get(channel)
@@ -230,13 +237,25 @@ class EventBus:
 
         with self._lock:
             for hook in self._post_publish_hooks:
-                hook(channel, args, kwargs)
+                try:
+                    hook(channel, args, kwargs)
+                except Exception as e:
+                    self._report_hook_error("post-publish", channel, e)
+
+    def _report_hook_error(self, phase: str, channel: str, exception: Exception):
+        if self._error_handler:
+            self._error_handler(exception, f"{phase}:{channel}", lambda: None)
+        else:
+            logger.error("[Signal Error] %s hook failed on channel '%s': %s", phase, channel, exception, exc_info=True)
 
     async def publish_async(self, channel: str, *args, **kwargs):
         """Asynchronously publish to an exact channel and any matching wildcard patterns."""
         with self._lock:
             for hook in self._pre_publish_hooks:
-                hook(channel, args, kwargs)
+                try:
+                    hook(channel, args, kwargs)
+                except Exception as e:
+                    self._report_hook_error("pre-publish", channel, e)
 
             exact_sig = self._channels.get(channel)
             matching_wildcards = [
@@ -252,7 +271,10 @@ class EventBus:
 
         with self._lock:
             for hook in self._post_publish_hooks:
-                hook(channel, args, kwargs)
+                try:
+                    hook(channel, args, kwargs)
+                except Exception as e:
+                    self._report_hook_error("post-publish", channel, e)
 
     def clear_channel(self, channel: str):
         with self._lock:

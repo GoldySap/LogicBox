@@ -1,32 +1,30 @@
 import math
 from typing import List, Optional, Tuple
-# from dataclasses import dataclass, field
-# from enum import Enum, auto
-# from typing import Any, Dict, List, Optional, Set, Tuple, Type
-# from LogicBox.src.engine.core.node import Component, Node
-# from signal import events
+
 
 class Matrix4:
-    """Full 4x4 Transformation Matrix supporting Translation, Rotation (Euler Pitch/Yaw/Roll), and Scaling."""
+    """Column-major 4x4 matrix with TRS, projection, and view operations."""
+
     def __init__(self, data: Optional[List[float]] = None):
-        if data and len(data) == 16:
-            self.m = list(data)
-        else:
-            self.m = [
-                1.0, 0.0, 0.0, 0.0,
-                0.0, 1.0, 0.0, 0.0,
-                0.0, 0.0, 1.0, 0.0,
-                0.0, 0.0, 0.0, 1.0
-            ]
+        if data is not None and len(data) != 16:
+            raise ValueError("A 4x4 matrix requires exactly 16 values")
+        self.m = list(data) if data is not None else [
+            1.0, 0.0, 0.0, 0.0,
+            0.0, 1.0, 0.0, 0.0,
+            0.0, 0.0, 1.0, 0.0,
+            0.0, 0.0, 0.0, 1.0,
+        ]
 
     @classmethod
-    def identity(cls) -> 'Matrix4':
+    def identity(cls) -> "Matrix4":
         return cls()
 
     @classmethod
-    def trs(cls, pos: Tuple[float, float, float], rot: Tuple[float, float, float], scale: Tuple[float, float, float]) -> 'Matrix4':
+    def trs(cls, pos: Tuple[float, float, float],
+            rot: Tuple[float, float, float],
+            scale: Tuple[float, float, float]) -> "Matrix4":
         x, y, z = pos
-        rx, ry, rz = math.radians(rot[0]), math.radians(rot[1]), math.radians(rot[2])
+        rx, ry, rz = (math.radians(value) for value in rot)
         sx, sy, sz = scale
 
         cx, sx_s = math.cos(rx), math.sin(rx)
@@ -44,280 +42,159 @@ class Matrix4:
         r22 = cx * cy
 
         return cls([
-            r00 * sx, r01 * sy, r02 * sz, 0.0,
-            r10 * sx, r11 * sy, r12 * sz, 0.0,
-            r20 * sx, r21 * sy, r22 * sz, 0.0,
-            x,        y,        z,        1.0
+            r00 * sx, r10 * sx, r20 * sx, 0.0,
+            r01 * sy, r11 * sy, r21 * sy, 0.0,
+            r02 * sz, r12 * sz, r22 * sz, 0.0,
+            x, y, z, 1.0,
         ])
 
-    def multiply(self, other: 'Matrix4') -> 'Matrix4':
-        res = [0.0] * 16
-        for r in range(4):
-            for c in range(4):
-                res[r * 4 + c] = sum(
-                    self.m[r * 4 + i] * other.m[i * 4 + c] for i in range(4)
+    def multiply(self, other: "Matrix4") -> "Matrix4":
+        result = [0.0] * 16
+        for column in range(4):
+            for row in range(4):
+                result[column * 4 + row] = sum(
+                    self.m[index * 4 + row] * other.m[column * 4 + index]
+                    for index in range(4)
                 )
-        return Matrix4(res)
+        return Matrix4(result)
+
+    def __mul__(self, other: "Matrix4") -> "Matrix4":
+        return self.multiply(other)
 
     def extract_position(self) -> Tuple[float, float, float]:
         return (self.m[12], self.m[13], self.m[14])
 
-
-class AABB:
-    """Axis-Aligned Bounding Box for universal spatial culling."""
-    def __init__(self, min_bounds: Tuple[float, float, float] = (-0.5, -0.5, -0.5),
-                 max_bounds: Tuple[float, float, float] = (0.5, 0.5, 0.5)):
-        self.min_bounds = min_bounds
-        self.max_bounds = max_bounds
-
-    def transform(self, matrix: Matrix4) -> 'AABB':
-        pos = matrix.extract_position()
-        return AABB(
-            min_bounds=(self.min_bounds[0] + pos[0], self.min_bounds[1] + pos[1], self.min_bounds[2] + pos[2]),
-            max_bounds=(self.max_bounds[0] + pos[0], self.max_bounds[1] + pos[1], self.max_bounds[2] + pos[2])
+    def multiply_point(self, point: Tuple[float, float, float]) -> Tuple[float, float, float]:
+        x, y, z = point
+        w = self.m[3] * x + self.m[7] * y + self.m[11] * z + self.m[15]
+        if abs(w) < 1e-12:
+            raise ZeroDivisionError("Point is on the matrix projection's homogeneous plane")
+        return (
+            (self.m[0] * x + self.m[4] * y + self.m[8] * z + self.m[12]) / w,
+            (self.m[1] * x + self.m[5] * y + self.m[9] * z + self.m[13]) / w,
+            (self.m[2] * x + self.m[6] * y + self.m[10] * z + self.m[14]) / w,
         )
 
-# class TransformComponent(Component):
-#     """Hierarchy matrix calculator with automatic dirty-flag propagation."""
-#     def __init__(self, position: Tuple[float, float, float] = (0.0, 0.0, 0.0),
-#                  rotation: Tuple[float, float, float] = (0.0, 0.0, 0.0),
-#                  scale: Tuple[float, float, float] = (1.0, 1.0, 1.0)):
-#         super().__init__()
-#         self._position = list(position)
-#         self._rotation = list(rotation)
-#         self._scale = list(scale)
-#         self._local_matrix = Matrix4.identity()
-#         self._world_matrix = Matrix4.identity()
-#         self._dirty = True
+    def inverse(self) -> "Matrix4":
+        augmented = [
+            list(self.m[row * 4:(row + 1) * 4])
+            + [1.0 if row == column else 0.0 for column in range(4)]
+            for row in range(4)
+        ]
+        for column in range(4):
+            pivot = max(range(column, 4), key=lambda row: abs(augmented[row][column]))
+            if abs(augmented[pivot][column]) < 1e-12:
+                raise ValueError("Matrix is singular and cannot be inverted")
+            augmented[column], augmented[pivot] = augmented[pivot], augmented[column]
+            divisor = augmented[column][column]
+            augmented[column] = [value / divisor for value in augmented[column]]
+            for row in range(4):
+                if row == column:
+                    continue
+                factor = augmented[row][column]
+                augmented[row] = [
+                    augmented[row][index] - factor * augmented[column][index]
+                    for index in range(8)
+                ]
+        return Matrix4([
+            augmented[row][column]
+            for row in range(4)
+            for column in range(4, 8)
+        ])
 
-#     def mark_dirty(self):
-#         if not self._dirty:
-#             self._dirty = True
-#             if self.node:
-#                 for child in self.node.children:
-#                     t = child.get_component(TransformComponent)
-#                     if t:
-#                         t.mark_dirty()
+    @classmethod
+    def look_at(cls, eye: Tuple[float, float, float],
+                target: Tuple[float, float, float],
+                up: Tuple[float, float, float] = (0.0, 1.0, 0.0)) -> "Matrix4":
+        ex, ey, ez = eye
+        fx, fy, fz = (target[index] - eye[index] for index in range(3))
+        length = math.sqrt(fx * fx + fy * fy + fz * fz)
+        if length < 1e-12:
+            raise ValueError("Camera position and target must be different")
+        fx, fy, fz = fx / length, fy / length, fz / length
 
-#     @property
-#     def position(self) -> List[float]: return self._position
-#     @position.setter
-#     def position(self, val: Tuple[float, float, float]): self._position = list(val); self.mark_dirty()
+        ux, uy, uz = up
+        sx = fy * uz - fz * uy
+        sy = fz * ux - fx * uz
+        sz = fx * uy - fy * ux
+        length = math.sqrt(sx * sx + sy * sy + sz * sz)
+        if length < 1e-12:
+            raise ValueError("Camera up vector cannot be parallel to the viewing direction")
+        sx, sy, sz = sx / length, sy / length, sz / length
 
-#     @property
-#     def rotation(self) -> List[float]: return self._rotation
-#     @rotation.setter
-#     def rotation(self, val: Tuple[float, float, float]): self._rotation = list(val); self.mark_dirty()
+        ux = sy * fz - sz * fy
+        uy = sz * fx - sx * fz
+        uz = sx * fy - sy * fx
+        return cls([
+            sx, sy, sz, 0.0,
+            ux, uy, uz, 0.0,
+            -fx, -fy, -fz, 0.0,
+            -(sx * ex + sy * ey + sz * ez),
+            -(ux * ex + uy * ey + uz * ez),
+            fx * ex + fy * ey + fz * ez,
+            1.0,
+        ])
 
-#     @property
-#     def scale(self) -> List[float]: return self._scale
-#     @scale.setter
-#     def scale(self, val: Tuple[float, float, float]): self._scale = list(val); self.mark_dirty()
+    @classmethod
+    def orthographic(cls, left: float, right: float,
+                     bottom: float, top: float,
+                     near: float, far: float) -> "Matrix4":
+        width = right - left
+        height = top - bottom
+        depth = far - near
+        if width <= 0 or height <= 0 or depth <= 0:
+            raise ValueError("Orthographic bounds must be ordered and have non-zero depth")
+        return cls([
+            2.0 / width, 0.0, 0.0, 0.0,
+            0.0, 2.0 / height, 0.0, 0.0,
+            0.0, 0.0, -2.0 / depth, 0.0,
+            -(right + left) / width,
+            -(top + bottom) / height,
+            -(far + near) / depth,
+            1.0,
+        ])
 
-#     def get_world_matrix(self) -> Matrix4:
-#         if self._dirty:
-#             local = Matrix4.trs(tuple(self._position), tuple(self._rotation), tuple(self._scale))
-#             parent_node = self.node.parent if self.node else None
-#             parent_t = parent_node.get_component(TransformComponent) if parent_node else None
-#             self._world_matrix = parent_t.get_world_matrix().multiply(local) if parent_t else local
-#             self._dirty = False
-#         return self._world_matrix
-
-
-# # ============================================================================
-# # 2. UNIVERSAL RESOURCE & ASSET MANAGER
-# # ============================================================================
-
-# class ResourceRegistry:
-#     """Universal Asset Manager mapping abstract keys to loaded memory objects/handles."""
-#     def __init__(self):
-#         self._resources: Dict[str, Any] = {}
-
-#     def register(self, resource_id: str, resource_data: Any):
-#         self._resources[resource_id] = resource_data
-
-#     def get(self, resource_id: str) -> Optional[Any]:
-#         return self._resources.get(resource_id)
-
-#     def unload(self, resource_id: str):
-#         if resource_id in self._resources:
-#             del self._resources[resource_id]
-
-# # Global Asset Engine Singleton
-# resources = ResourceRegistry()
-
-
-# # ============================================================================
-# # 3. CAMERA, VIEWPORT & SPATIAL CULLING
-# # ============================================================================
-
-# class ProjectionType(Enum):
-#     ORTHOGRAPHIC = auto()
-#     PERSPECTIVE = auto()
-#     CELL_GRID = auto()
-
-
-# class CameraComponent(Component):
-#     """Camera supporting multi-projection space, frustum/box culling, and viewport bounds."""
-#     def __init__(self, projection_type: ProjectionType = ProjectionType.ORTHOGRAPHIC,
-#                  ortho_bounds: Tuple[float, float, float, float] = (-10.0, 10.0, -10.0, 10.0),
-#                  near: float = 0.1, far: float = 1000.0, active: bool = True):
-#         super().__init__()
-#         self.projection_type = projection_type
-#         self.ortho_bounds = ortho_bounds  # (left, right, bottom, top)
-#         self.near = near
-#         self.far = far
-#         self.active = active
-
-#     def is_aabb_visible(self, aabb: AABB) -> bool:
-#         """Simple, target-agnostic bounding-box frustum check."""
-#         l, r, b, t = self.ortho_bounds
-#         # Check X/Y spatial overlap against viewport orthographic bounds
-#         if aabb.max_bounds[0] < l or aabb.min_bounds[0] > r:
-#             return False
-#         if aabb.max_bounds[1] < b or aabb.min_bounds[1] > t:
-#             return False
-#         return True
+    @classmethod
+    def perspective(cls, fov_degrees: float, aspect_ratio: float,
+                    near: float, far: float) -> "Matrix4":
+        if not 0 < fov_degrees < 180:
+            raise ValueError("Perspective field of view must be between 0 and 180 degrees")
+        if aspect_ratio <= 0:
+            raise ValueError("Aspect ratio must be positive")
+        if near <= 0 or far <= near:
+            raise ValueError("Perspective requires 0 < near < far")
+        f = 1.0 / math.tan(math.radians(fov_degrees) / 2.0)
+        return cls([
+            f / aspect_ratio, 0.0, 0.0, 0.0,
+            0.0, f, 0.0, 0.0,
+            0.0, 0.0, (far + near) / (near - far), -1.0,
+            0.0, 0.0, (2.0 * far * near) / (near - far), 0.0,
+        ])
 
 
-# # ============================================================================
-# # 4. MULTI-PASS COMMAND BUFFER (Material Batching & Sorting)
-# # ============================================================================
+class AABB:
+    """Axis-aligned bounding box used for culling and broad-phase collision."""
 
-# class RenderPassType(Enum):
-#     SHADOW = auto()
-#     BACKGROUND = auto()
-#     OPAQUE = auto()
-#     TRANSPARENT = auto()
-#     UI = auto()
+    def __init__(self,
+                 min_bounds: Tuple[float, float, float] = (-0.5, -0.5, -0.5),
+                 max_bounds: Tuple[float, float, float] = (0.5, 0.5, 0.5)):
+        if any(min_bounds[index] > max_bounds[index] for index in range(3)):
+            raise ValueError("AABB minimum bounds must not exceed maximum bounds")
+        self.min_bounds = tuple(min_bounds)
+        self.max_bounds = tuple(max_bounds)
 
-
-# @dataclass
-# class DrawCommand:
-#     """Stateless render payload emitted to driver engines."""
-#     node_path: str
-#     pass_type: RenderPassType
-#     layer: int
-#     sorting_depth: float
-#     material_id: str
-#     world_matrix: Matrix4
-#     primitive_type: str
-#     payload: Dict[str, Any]
-
-
-# class CommandBuffer:
-#     """Manages command queue and executes state-optimized multi-pass sorting."""
-#     def __init__(self):
-#         self.commands: List[DrawCommand] = []
-
-#     def push(self, cmd: DrawCommand):
-#         self.commands.append(cmd)
-
-#     def sort(self):
-#         # Optimized Order: Pass -> Layer -> Material (State Minimization) -> Depth
-#         self.commands.sort(key=lambda c: (c.pass_type.value, c.layer, c.material_id, c.sorting_depth))
-
-#     def clear(self):
-#         self.commands.clear()
-
-
-# # ============================================================================
-# # 5. UNIVERSAL RENDER COMPONENT BASE & PIPELINE CORE
-# # ============================================================================
-
-# class RenderableComponent(Component):
-#     """Base visual component with bounding-box support for frustum culling."""
-#     def __init__(self, pass_type: RenderPassType = RenderPassType.OPAQUE, layer: int = 0, visible: bool = True):
-#         super().__init__()
-#         self.pass_type = pass_type
-#         self.layer = layer
-#         self.visible = visible
-#         self.material_id: str = "default_mat"
-#         self.local_aabb = AABB()
-
-#     def build_draw_command(self, camera: Optional[CameraComponent]) -> Optional[DrawCommand]:
-#         if not self.visible or not self.node:
-#             return None
-
-#         transform = self.node.get_component(TransformComponent)
-#         world_mat = transform.get_world_matrix() if transform else Matrix4.identity()
-
-#         # Spatial Culling Check
-#         if camera:
-#             world_aabb = self.local_aabb.transform(world_mat)
-#             if not camera.is_aabb_visible(world_aabb):
-#                 return None
-
-#         world_pos = world_mat.extract_position()
-#         depth = 0.0
-#         if camera and camera.node:
-#             cam_t = camera.node.get_component(TransformComponent)
-#             if cam_t:
-#                 cpos = cam_t.get_world_matrix().extract_position()
-#                 depth = math.sqrt(sum((a - b) ** 2 for a, b in zip(world_pos, cpos)))
-
-#         return DrawCommand(
-#             node_path=self.node.path,
-#             pass_type=self.pass_type,
-#             layer=self.layer,
-#             sorting_depth=depth,
-#             material_id=self.material_id,
-#             world_matrix=world_mat,
-#             primitive_type=self.get_primitive_type(),
-#             payload=self.get_payload()
-#         )
-
-#     def get_primitive_type(self) -> str: raise NotImplementedError
-#     def get_payload(self) -> Dict[str, Any]: return {}
-
-
-# class UniversalDriver:
-#     """Driver contract for concrete graphic implementations."""
-#     def begin_frame(self): pass
-#     def execute_command_buffer(self, buffer: CommandBuffer, camera: Optional[CameraComponent]): raise NotImplementedError
-#     def end_frame(self): pass
-
-
-# class UniversalRenderPipeline:
-#     """Target-agnostic rendering pipeline orchestrator."""
-#     def __init__(self, driver: Optional[UniversalDriver] = None):
-#         self.driver: Optional[UniversalDriver] = driver
-#         self.command_buffer = CommandBuffer()
-
-#         events.subscribe("render:set_driver", self.set_driver)
-#         events.subscribe("render:frame", self.render_scene)
-
-#     def set_driver(self, driver: UniversalDriver):
-#         self.driver = driver
-
-#     def render_scene(self, root_node: Node):
-#         if not self.driver:
-#             return
-
-#         self.command_buffer.clear()
-
-#         # 1. Locate Active Camera
-#         camera_nodes = root_node.find_by_component(CameraComponent)
-#         active_camera: Optional[CameraComponent] = None
-#         for cnode in camera_nodes:
-#             c = cnode.get_component(CameraComponent)
-#             if c and c.active:
-#                 active_camera = c
-#                 break
-
-#         # 2. Extract Commands & Perform Culling
-#         renderable_nodes = root_node.find_by_component(RenderableComponent)
-#         for rnode in renderable_nodes:
-#             rcomp = rnode.get_component(RenderableComponent)
-#             if rcomp:
-#                 cmd = rcomp.build_draw_command(active_camera)
-#                 if cmd:
-#                     self.command_buffer.push(cmd)
-
-#         # 3. State-Optimized Sorting
-#         self.command_buffer.sort()
-
-#         # 4. Flush to Hardware Driver
-#         self.driver.begin_frame()
-#         self.driver.execute_command_buffer(self.command_buffer, active_camera)
-#         self.driver.end_frame()
+    def transform(self, matrix: Matrix4) -> "AABB":
+        corners = [
+            (
+                matrix.m[0] * x + matrix.m[4] * y + matrix.m[8] * z + matrix.m[12],
+                matrix.m[1] * x + matrix.m[5] * y + matrix.m[9] * z + matrix.m[13],
+                matrix.m[2] * x + matrix.m[6] * y + matrix.m[10] * z + matrix.m[14],
+            )
+            for x in (self.min_bounds[0], self.max_bounds[0])
+            for y in (self.min_bounds[1], self.max_bounds[1])
+            for z in (self.min_bounds[2], self.max_bounds[2])
+        ]
+        return AABB(
+            tuple(min(corner[index] for corner in corners) for index in range(3)),
+            tuple(max(corner[index] for corner in corners) for index in range(3)),
+        )

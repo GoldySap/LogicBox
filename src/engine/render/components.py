@@ -52,6 +52,18 @@ class TransformComponent(Component):
             self._dirty = False
         return self._world_matrix
 
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "position": self._position,
+            "rotation": self._rotation,
+            "scale": self._scale,
+        }
+
+    def load_state(self, data: Dict[str, Any]):
+        self.position = tuple(data.get("position", (0.0, 0.0, 0.0)))
+        self.rotation = tuple(data.get("rotation", (0.0, 0.0, 0.0)))
+        self.scale = tuple(data.get("scale", (1.0, 1.0, 1.0)))
+
 
 class ProjectionType(Enum):
     ORTHOGRAPHIC = auto()
@@ -63,15 +75,75 @@ class CameraComponent(Component):
     """Camera supporting viewports and spatial bounding box culling."""
     def __init__(self, projection_type: ProjectionType = ProjectionType.ORTHOGRAPHIC,
                  ortho_bounds: Tuple[float, float, float, float] = (-10.0, 10.0, -10.0, 10.0),
-                 near: float = 0.1, far: float = 1000.0, active: bool = True):
+                 near: float = 0.1, far: float = 1000.0, active: bool = True,
+                 fov_degrees: float = 60.0, viewport_size: Tuple[int, int] = (800, 600)):
         super().__init__()
         self.projection_type = projection_type
         self.ortho_bounds = ortho_bounds
         self.near = near
         self.far = far
         self.active = active
+        self.fov_degrees = fov_degrees
+        self.viewport_size = viewport_size
+        self.target = (0.0, 0.0, 0.0)
+        self.up = (0.0, 1.0, 0.0)
+
+    def get_view_matrix(self) -> Matrix4:
+        if not self.node:
+            return Matrix4.identity()
+        transform = self.node.get_component(TransformComponent)
+        eye = transform.get_world_matrix().extract_position() if transform else (0.0, 0.0, 0.0)
+        return Matrix4.look_at(eye, self.target, self.up)
+
+    def get_projection_matrix(self) -> Matrix4:
+        if self.projection_type == ProjectionType.PERSPECTIVE:
+            width, height = self.viewport_size
+            return Matrix4.perspective(
+                self.fov_degrees,
+                width / height if height else 1.0,
+                self.near,
+                self.far,
+            )
+        left, right, bottom, top = self.ortho_bounds
+        return Matrix4.orthographic(left, right, bottom, top, self.near, self.far)
+
+    def get_view_projection_matrix(self) -> Matrix4:
+        return self.get_projection_matrix().multiply(self.get_view_matrix())
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "projection_type": self.projection_type.name,
+            "ortho_bounds": self.ortho_bounds,
+            "near": self.near,
+            "far": self.far,
+            "active": self.active,
+            "fov_degrees": self.fov_degrees,
+            "viewport_size": self.viewport_size,
+            "target": self.target,
+            "up": self.up,
+        }
+
+    def load_state(self, data: Dict[str, Any]):
+        self.projection_type = ProjectionType[data.get("projection_type", "ORTHOGRAPHIC")]
+        self.ortho_bounds = tuple(data.get("ortho_bounds", (-10.0, 10.0, -10.0, 10.0)))
+        self.near = data.get("near", 0.1)
+        self.far = data.get("far", 1000.0)
+        self.active = data.get("active", True)
+        self.fov_degrees = data.get("fov_degrees", 60.0)
+        self.viewport_size = tuple(data.get("viewport_size", (800, 600)))
+        self.target = tuple(data.get("target", (0.0, 0.0, 0.0)))
+        self.up = tuple(data.get("up", (0.0, 1.0, 0.0)))
 
     def is_aabb_visible(self, aabb: AABB) -> bool:
+        if self.projection_type == ProjectionType.PERSPECTIVE:
+            view_projection = self.get_view_projection_matrix()
+            for x in (aabb.min_bounds[0], aabb.max_bounds[0]):
+                for y in (aabb.min_bounds[1], aabb.max_bounds[1]):
+                    for z in (aabb.min_bounds[2], aabb.max_bounds[2]):
+                        point = view_projection.multiply_point((x, y, z))
+                        if -1.0 <= point[0] <= 1.0 and -1.0 <= point[1] <= 1.0 and -1.0 <= point[2] <= 1.0:
+                            return True
+            return False
         l, r, b, t = self.ortho_bounds
         if aabb.max_bounds[0] < l or aabb.min_bounds[0] > r:
             return False

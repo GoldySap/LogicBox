@@ -82,5 +82,7 @@ class UniversalRenderPipeline:
         self.command_buffer.sort()
 
         self.driver.begin_frame()
-        self.driver.execute_command_buffer(self.command_buffer, active_camera)
-        self.driver.end_frame()
+        try:
+            self.driver.execute_command_buffer(self.command_buffer, active_camera)
+        finally:
+            self.driver.end_frame()
