@@ -80,10 +80,13 @@ class RigidBody(Component):
 
 
 class Collider(Component):
-    def __init__(self, bounds: AABB = None, trigger: bool = False):
+    def __init__(self, bounds: AABB = None, trigger: bool = False,
+                 layer: int = 0, mask: int = -1):
         super().__init__()
         self.bounds = bounds or AABB()
         self.trigger = trigger
+        self.layer = layer
+        self.mask = mask
 
     def world_aabb(self) -> Optional[AABB]:
         if not self.node:
@@ -153,3 +156,131 @@ class CollisionWorld:
                         normal = (dx / length, dy / length, dz / length) if length else (1.0, 0.0, 0.0)
                         collisions.append(Collision(first_node, second_node, normal))
         return collisions
+
+
+@dataclass
+class PhysicsRay:
+    origin: Tuple[float, float, float]
+    direction: Tuple[float, float, float]
+    length: float = 1000.0
+
+    def validate(self):
+        if self.length <= 0:
+            raise ValueError("ray length must be positive")
+        length = sum(value * value for value in self.direction) ** 0.5
+        if length == 0:
+            raise ValueError("ray direction cannot be zero")
+
+
+@dataclass
+class RayHit:
+    node: object
+    distance: float
+    point: Tuple[float, float, float]
+    normal: Tuple[float, float, float]
+
+
+class PhysicsWorld:
+    """Deterministic fixed-step AABB and trigger world."""
+    def __init__(self, fixed_step: float = 1.0 / 60.0,
+                 gravity: Tuple[float, float, float] = (0.0, -9.81, 0.0)):
+        if fixed_step <= 0:
+            raise ValueError("fixed_step must be positive")
+        self.fixed_step = fixed_step
+        self.gravity = gravity
+        self.accumulator = 0.0
+
+    def step(self, root, delta: float):
+        if delta < 0:
+            raise ValueError("delta cannot be negative")
+        self.accumulator += delta
+        steps = 0
+        while self.accumulator >= self.fixed_step:
+            root._fixed_process(self.fixed_step)
+            self.accumulator -= self.fixed_step
+            steps += 1
+        return steps
+
+    def raycast(self, root, ray: PhysicsRay,
+                max_distance: Optional[float] = None,
+                layer_mask: int = -1) -> Optional[RayHit]:
+        ray.validate()
+        limit = ray.length if max_distance is None else min(ray.length, max_distance)
+        direction_length = sum(value * value for value in ray.direction) ** 0.5
+        dx = ray.direction[0] / direction_length
+        dy = ray.direction[1] / direction_length
+        dz = ray.direction[2] / direction_length
+        best = None
+        for node in root.find_by_component(Collider):
+            collider = node.get_component(Collider)
+            bounds = collider.world_aabb()
+            if bounds is None:
+                continue
+            if ((1 << collider.layer) & layer_mask) == 0:
+                continue
+            distances = []
+            for axis, origin, delta in (
+                (0, ray.origin[0], dx),
+                (1, ray.origin[1], dy),
+                (2, ray.origin[2], dz),
+            ):
+                if abs(delta) < 1e-12:
+                    if origin < bounds.min_bounds[axis] or origin > bounds.max_bounds[axis]:
+                        break
+                else:
+                    first = (bounds.min_bounds[axis] - origin) / delta
+                    second = (bounds.max_bounds[axis] - origin) / delta
+                    distances.append((min(first, second), max(first, second)))
+            else:
+                near = max(distance[0] for distance in distances)
+                far = min(distance[1] for distance in distances)
+                if near <= far and 0 <= near <= limit:
+                    if best is None or near < best.distance:
+                        point = (
+                            ray.origin[0] + dx * near,
+                            ray.origin[1] + dy * near,
+                            ray.origin[2] + dz * near,
+                        )
+                        best = RayHit(node, near, point, (dx, dy, dz))
+        return best
+
+
+@dataclass
+class Joint:
+    first: object
+    second: object
+    anchor_first: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+    anchor_second: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+    stiffness: float = 10.0
+    damping: float = 1.0
+
+    def solve(self, fixed_delta: float):
+        if fixed_delta <= 0:
+            raise ValueError("fixed_delta must be positive")
+        if not hasattr(self.first, "get_component") or not hasattr(self.second, "get_component"):
+            return
+        from engine.render.components import TransformComponent
+        first_transform = self.first.get_component(TransformComponent)
+        second_transform = self.second.get_component(TransformComponent)
+        if first_transform is None or second_transform is None:
+            return
+        first_position = first_transform.get_world_matrix().extract_position()
+        second_position = second_transform.get_world_matrix().extract_position()
+        dx = second_position[0] - first_position[0]
+        dy = second_position[1] - first_position[1]
+        dz = second_position[2] - first_position[2]
+        distance = (dx * dx + dy * dy + dz * dz) ** 0.5
+        if distance == 0:
+            return
+        correction = max(0.0, distance - self.stiffness * fixed_delta)
+        nx, ny, nz = dx / distance, dy / distance, dz / distance
+        first_body = self.first.get_component(RigidBody)
+        second_body = self.second.get_component(RigidBody)
+        if first_body:
+            first_body.velocity[0] += nx * correction * self.damping
+            first_body.velocity[1] += ny * correction * self.damping
+            first_body.velocity[2] += nz * correction * self.damping
+        if second_body:
+            second_body.velocity[0] -= nx * correction * self.damping
+            second_body.velocity[1] -= ny * correction * self.damping
+            second_body.velocity[2] -= nz * correction * self.damping

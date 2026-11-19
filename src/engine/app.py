@@ -9,6 +9,8 @@ from engine.core.plugins import PluginManager
 from engine.core.tasks import TaskRunner
 from engine.core.config import Config
 from engine.core.diagnostics import Diagnostics
+from engine.core.assets import AssetManager
+from engine.core.profiler import FrameProfiler
 from engine.render.pipeline import UniversalRenderPipeline
 
 
@@ -32,12 +34,16 @@ class Application:
         self.extensions = []
         self.config = Config()
         self.diagnostics = Diagnostics()
+        self.assets = AssetManager()
+        self.profiler = FrameProfiler()
         self.tasks = TaskRunner()
         self.plugins = PluginManager(self)
         self.add_service("config", self.config)
         self.add_service("diagnostics", self.diagnostics)
         self.add_service("tasks", self.tasks)
         self.add_service("input", self.input)
+        self.add_service("assets", self.assets)
+        self.add_service("profiler", self.profiler)
         self.running = False
         self._closed = False
         self.on_start: Optional[Callable[[], None]] = None
@@ -71,6 +77,8 @@ class Application:
     def start(self):
         if self._closed:
             raise RuntimeError("Application is closed")
+        if self.running:
+            return
         self.running = True
         self.root._enter_tree()
         events.publish("app:started", self)
@@ -87,15 +95,26 @@ class Application:
             return
         self.running = False
         events.publish("app:stopping", self)
-        if self.on_shutdown:
-            self.on_shutdown()
-        for extension in reversed(self.extensions):
-            extension.on_unload(self)
-        self.extensions.clear()
-        self.plugins.unload_all()
-        self.tasks.cancel_all()
-        self.root._exit_tree()
-        events.publish("app:stopped", self)
+        try:
+            if self.on_shutdown:
+                self.on_shutdown()
+        finally:
+            unload_errors = []
+            for extension in reversed(self.extensions):
+                try:
+                    extension.on_unload(self)
+                except Exception as exc:
+                    unload_errors.append(exc)
+                    self.diagnostics.error(
+                        "Extension unload failed",
+                        source="application",
+                        exception=str(exc),
+                    )
+            self.extensions.clear()
+            self.plugins.unload_all()
+            self.tasks.cancel_all()
+            self.root._exit_tree()
+            events.publish("app:stopped", self)
 
     def close(self):
         if self._closed:
@@ -106,6 +125,7 @@ class Application:
                 self.stop()
             finally:
                 self.tasks.shutdown(wait=True)
+                self.assets.close(wait=True)
         else:
             for extension in reversed(self.extensions):
                 try:
@@ -119,6 +139,11 @@ class Application:
             self.extensions.clear()
             self.plugins.unload_all()
         self.tasks.shutdown(wait=True)
+        self.assets.close(wait=True)
+        if self.pipeline and getattr(self.pipeline, "driver", None) is not None:
+            shutdown = getattr(self.pipeline.driver, "shutdown", None)
+            if callable(shutdown):
+                shutdown()
 
     def __enter__(self):
         self.start()
@@ -134,23 +159,27 @@ class Application:
         try:
             while self.running:
                 frame_start = time.monotonic()
-                delta = self.clock.tick()
-                self._fixed_accumulator += delta
-                self.scheduler.update()
-                if self.on_update:
-                    self.on_update(delta)
-                events.publish("app:update", delta)
-                self.root._process(delta)
-                self.input.end_frame()
-                while self._fixed_accumulator >= self.fixed_step:
-                    self.root._fixed_process(self.fixed_step)
-                    events.publish("app:fixed_update", self.fixed_step)
-                    self._fixed_accumulator -= self.fixed_step
-                if self.pipeline:
-                    self.pipeline.render_scene(self.root)
-                elapsed = time.monotonic() - frame_start
-                if elapsed < frame_time:
-                    time.sleep(frame_time - elapsed)
+                self.profiler.begin("frame")
+                try:
+                    delta = self.clock.tick()
+                    self._fixed_accumulator += delta
+                    self.scheduler.update()
+                    if self.on_update:
+                        self.on_update(delta)
+                    events.publish("app:update", delta)
+                    self.root._process(delta)
+                    self.input.end_frame()
+                    while self._fixed_accumulator >= self.fixed_step:
+                        self.root._fixed_process(self.fixed_step)
+                        events.publish("app:fixed_update", self.fixed_step)
+                        self._fixed_accumulator -= self.fixed_step
+                    if self.pipeline:
+                        self.pipeline.render_scene(self.root)
+                    elapsed = time.monotonic() - frame_start
+                    if elapsed < frame_time:
+                        time.sleep(frame_time - elapsed)
+                finally:
+                    self.profiler.end("frame")
         finally:
             if self.running:
                 self.stop()

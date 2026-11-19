@@ -18,6 +18,7 @@ class OpenGLGraphicsDriver(UniversalDriver):
         self._programs = {}
         self._buffers = {}
         self._vaos = []
+        self._vao_cache = {}
 
     def create_program(self, name: str,
                        vertex_source: Optional[str] = None,
@@ -73,8 +74,12 @@ class OpenGLGraphicsDriver(UniversalDriver):
                 program = self._programs.get(command.payload.get("program", "default"))
                 if program is None:
                     program = self.create_program("default")
-                vao = self.context.vertex_array(program, [(gpu_buffer, "3f", "in_position")])
-                self._vaos.append(vao)
+                vao_key = (buffer_name, id(program))
+                vao = self._vao_cache.get(vao_key)
+                if vao is None:
+                    vao = self.context.vertex_array(program, [(gpu_buffer, "3f", "in_position")])
+                    self._vao_cache[vao_key] = vao
+                    self._vaos.append(vao)
                 try:
                     mvp_uniform = program["mvp"]
                 except KeyError:

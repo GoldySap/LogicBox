@@ -27,6 +27,27 @@ from engine import (
     TaskRunner,
     Config,
     Diagnostics,
+    AssetManager,
+    UDPChannel,
+    MessageCodec,
+    FrameProfiler,
+    AssetManifest,
+    HotReloadWatcher,
+    AnimationKeyframe,
+    AnimationClip,
+    AnimationStateMachine,
+    NavNode,
+    NavMesh,
+    SaveSystem,
+    SaveMigration,
+    ReplicationManager,
+    NetworkSession,
+    Inspector,
+    CrashReporter,
+    RollbackBuffer,
+    CapabilityPolicy,
+    TCPChannel,
+    ReliablePacketChannel,
 )
 from engine.core.signal import EventBus
 
@@ -310,6 +331,30 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(len(root.children), 1000)
         self.assertEqual(len(root.find_by_component(TransformComponent)), 0)
 
+    def test_asset_loader_profiler_and_udp_channel(self):
+        assets = AssetManager(max_workers=2)
+        future = assets.load_async("answer", lambda: 42)
+        self.assertEqual(future.result(timeout=2), 42)
+        self.assertEqual(assets.get("answer"), 42)
+        self.assertTrue(assets.unload("answer"))
+        assets.close()
+
+        profiler = FrameProfiler(history_size=5)
+        self.assertEqual(
+            profiler.measure("work", lambda value: value + 1, 4),
+            5,
+        )
+        snapshot = profiler.snapshot()
+        self.assertEqual(snapshot["work"]["count"], 1)
+
+        channel = UDPChannel("127.0.0.1", 0)
+        reply = UDPChannel("127.0.0.1", 0)
+        channel.send({"kind": "ping", "value": 7}, reply.address)
+        message = reply.receive()
+        self.assertEqual(message[0]["value"], 7)
+        channel.close()
+        reply.close()
+
     def test_collision_resolution_reverses_relative_velocity(self):
         root = Node("root")
         first = Node("first", root)
@@ -331,6 +376,174 @@ class EngineTests(unittest.TestCase):
         collisions[0].resolve(restitution=0.5)
         self.assertLess(first_body.velocity[0], 1.0)
         self.assertGreater(second_body.velocity[0], -1.0)
+
+    def test_animation_navigation_and_replication(self):
+        clip = AnimationClip(
+            "walk",
+            1.0,
+            {"position": [
+                AnimationKeyframe(0.0, 0.0),
+                AnimationKeyframe(1.0, 10.0),
+            ]},
+            looping=True,
+        )
+        clip.validate()
+        machine = AnimationStateMachine()
+        machine.add_state("walk", clip)
+        self.assertEqual(machine.update(0.5, object())["position"], 5.0)
+
+        nav = NavMesh()
+        nav.add_node(NavNode("a", (0, 0, 0)))
+        nav.add_node(NavNode("b", (1, 0, 0)))
+        nav.add_node(NavNode("c", (2, 0, 0)))
+        nav.add_edge("a", "b")
+        nav.add_edge("b", "c")
+        self.assertEqual(nav.find_path("a", "c"), ["a", "b", "c"])
+
+        replication = ReplicationManager()
+        replication.set_state("player-1", {"x": 1, "y": 2})
+        delta = replication.get_delta("player-1", {"x": 0, "y": 2})
+        self.assertEqual(delta, {"x": 1})
+        state = replication.apply_delta("player-1", {"health": 90})
+        self.assertEqual(state["health"], 90)
+
+        session = NetworkSession("server")
+        session.connect("peer-a")
+        self.assertIn("peer-a", session.connected)
+
+    def test_save_manifest_inspector_rollback_and_capabilities(self):
+        migration = SaveMigration(
+            2,
+            lambda data: {**data, "migrated": True},
+        )
+        saves = SaveSystem({2: migration})
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "save.json"
+            saves.save_json(path, {"score": 10})
+            loaded = saves.load_json(path)
+            self.assertEqual(loaded["score"], 10)
+            self.assertTrue(loaded["migrated"])
+
+        manifest = AssetManifest()
+        manifest.add("level", "levels/level.json", "scene", "abc")
+        self.assertEqual(manifest.entries["level"]["kind"], "scene")
+
+        root = Node("root")
+        root.tags.add("scene")
+        child = Node("child", root)
+        child.add_component(Component())
+        snapshot = Inspector().snapshot(root)
+        self.assertEqual(snapshot.node_count, 2)
+        self.assertEqual(snapshot.component_count, 1)
+
+        rollback = RollbackBuffer(capacity=3)
+        rollback.record({"frame": 1})
+        rollback.record({"frame": 2})
+        self.assertEqual(rollback.restore(1), {"frame": 2})
+
+        policy = CapabilityPolicy({"network.read"})
+        policy.require("network.read")
+        policy.grant("network.write")
+        self.assertTrue(policy.can("network.write"))
+
+    def test_terminal_driver_and_component_lifecycle_contract(self):
+        from engine.drivers.terminal import TerminalGraphicsDriver
+        from engine.render.pipeline import DrawCommand, RenderPassType
+        from engine.core.math import Matrix4
+
+        self.assertTrue(callable(Component().on_process))
+        self.assertTrue(callable(Component().on_fixed_process))
+        self.assertTrue(callable(Component().on_input))
+        terminal = TerminalGraphicsDriver(width=12, height=4)
+        terminal.begin_frame()
+        command = DrawCommand(
+            node_path="/root",
+            pass_type=RenderPassType.UI,
+            layer=0,
+            sorting_depth=0.0,
+            material_id="text",
+            world_matrix=Matrix4.trs((1, 1, 0), (0, 0, 0), (1, 1, 1)),
+            primitive_type="terminal_text",
+            payload={"text": "OK"},
+        )
+        terminal.execute_command_buffer(
+            type("Buffer", (), {"commands": [command]})(),
+            None,
+        )
+        self.assertEqual(terminal.buffer[1][1], "O")
+        self.assertEqual(terminal.buffer[1][2], "K")
+
+    def test_reliable_packet_acknowledgement(self):
+        sender = UDPChannel("127.0.0.1", 0)
+        receiver = UDPChannel("127.0.0.1", 0)
+        reliable = ReliablePacketChannel(sender)
+        sequence = reliable.send_reliable({"value": 1}, receiver.address)
+        envelope = receiver.receive()
+        self.assertEqual(envelope[0]["sequence"], sequence)
+        reliable.receive_reliable()
+        sender.close()
+        receiver.close()
+
+    def test_stress_components_signals_and_tasks(self):
+        root = Node("root")
+        for index in range(500):
+            child = Node(f"node-{index}", root)
+            child.tags.add("stress")
+            child.add_component(Counter())
+
+        self.assertEqual(len(root.find_by_tag("stress")), 500)
+        signal = Signal("stress")
+        received = []
+        for index in range(200):
+            signal.connect(
+                lambda value, index=index: received.append(value + index),
+                weak=False,
+            )
+        signal.emit(1)
+        self.assertEqual(len(received), 200)
+
+        runner = TaskRunner(max_workers=4)
+        futures = [runner.submit(pow, 2, index) for index in range(50)]
+        self.assertEqual(sum(future.result(timeout=5) for future in futures), sum(2 ** i for i in range(50)))
+        runner.shutdown(wait=True)
+
+    def test_look_at_camera_orientation_and_application_double_start(self):
+        view = Matrix4.look_at(
+            (0, 0, 5),
+            (0, 0, 0),
+            (0, 1, 0),
+        )
+        transformed_origin = view.multiply_point((0, 0, 0))
+        self.assertAlmostEqual(transformed_origin[2], -5.0)
+
+        app = Application(target_fps=120)
+        app.start()
+        app.start()
+        app.stop()
+        app.stop()
+        app.close()
+        self.assertFalse(app.running)
+
+    def test_component_exception_is_isolated(self):
+        class BrokenComponent(Component):
+            def on_process(self, delta):
+                raise RuntimeError("expected test failure")
+
+            def on_fixed_process(self, fixed_delta):
+                raise RuntimeError("expected fixed failure")
+
+            def on_input(self, event):
+                raise RuntimeError("expected input failure")
+
+        root = Node("root")
+        root.add_component(BrokenComponent())
+        root._process(0.016)
+        root._fixed_process(1 / 60)
+        root._input({"test": True})
+        sibling = Node("sibling", root)
+        sibling.add_component(Counter())
+        root._process(0.016)
+        self.assertEqual(sibling.get_component(Counter).value, 0)
 
 
 if __name__ == "__main__":

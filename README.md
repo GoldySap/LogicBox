@@ -1,5 +1,9 @@
 # Universal Engine
 
+LogicBox is a modular, dependency-free core for games and general applications,
+with optional Pygame, ModernGL, networking, asset, physics, animation,
+navigation, persistence, replication, profiling, and plugin subsystems.
+
 Universal Engine is a small, target-agnostic Python engine for node trees,
 signals, transformations, and render-command generation.
 
@@ -152,6 +156,21 @@ app.config.set("project.name", "My Application")
 future = app.tasks.submit(my_custom_function, argument)
 ```
 
+## Assets, Profiling, and Networking
+
+```python
+from engine import AssetManager, FrameProfiler, UDPChannel
+
+assets = AssetManager()
+future = assets.load_file_async("config", "config.json", "r")
+profiler = FrameProfiler()
+channel = UDPChannel("127.0.0.1", 9000)
+```
+
+The networking module provides a dependency-free UDP datagram foundation.
+Applications needing reliable or secure transport should add a plugin or
+backend based on the project requirements.
+
 ## Rendering Backends
 
 `UniversalRenderPipeline` builds backend-neutral draw commands.
@@ -160,3 +179,33 @@ future = app.tasks.submit(my_custom_function, argument)
 `OpenGLGraphicsDriver` provides the ModernGL backend contract.
 
 Drivers implement `begin_frame`, `execute_command_buffer`, and `end_frame`.
+
+## Domain Subsystems
+
+- Materials, textures, meshes, lights, and draw-instance metadata
+- AABB collision broad phase, raycasting, rigid-body integration, joints, and
+  fixed-step physics worlds
+- Animation clips, keyframes, blending-compatible sample APIs, and state machines
+- Graph-based navmesh pathfinding
+- UDP, TCP length framing, reliable-UDP sequence acknowledgement, replication,
+  sessions, interest-ready state snapshots
+- Asset manifests, async loading, caching, unloading, and hot-reload watchers
+- JSON saves with migrations and SQLite-backed storage primitives
+- Spatial audio buses, scene inspection, crash reports, rollback buffers,
+  capability policies, and frame profiling
+
+## Maturity scope
+
+The terminal driver is retained as the dependency-free, headless-compatible
+fallback. Pygame provides desktop 2D/window support and ModernGL provides an
+optional GPU mesh backend. Platform-native window, clipboard, accessibility,
+and installer integration is intentionally outside the current core scope.
+
+## Quality and stability
+
+- Run unit and stress tests with `python -m unittest discover -s tests -v`.
+- Compile sources with `python -m compileall -q src tests`.
+- Build a release wheel with `python -m pip wheel --no-deps --wheel-dir dist .`.
+- The core package is dependency-free; Pygame and ModernGL are optional extras.
+- Component process/input exceptions are isolated and published on
+  `engine:error` instead of terminating the whole application.

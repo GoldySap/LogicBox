@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "logicbox-engine"
-version = "1.0.0"
+version = "1.1.0"
 description = "Target-agnostic node, signal, and rendering architecture."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -33,6 +33,11 @@ terminal = []       # Standard library only
 pygame = ["pygame>=2.5.0"]
 opengl = ["moderngl>=5.8.0", "PyGLM>=2.7.0"]
 all = ["pygame>=2.5.0", "moderngl>=5.8.0", "PyGLM>=2.7.0"]
+network = []        # Python standard-library networking
+dev = [
+    "build>=1.2.0",
+    "twine>=5.0.0",
+]
 
 [project.scripts]
 logicbox = "engine.cli:main"

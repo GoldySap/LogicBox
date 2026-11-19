@@ -12,3 +12,6 @@ class UniversalDriver:
 
     def end_frame(self):
         pass
+
+    def shutdown(self):
+        pass

@@ -6,6 +6,8 @@ from engine.render.pipeline import CommandBuffer
 class TerminalGraphicsDriver(UniversalDriver):
     """Driver converting render commands into ASCII screen buffer grids."""
     def __init__(self, width: int = 40, height: int = 10):
+        if width <= 0 or height <= 0:
+            raise ValueError("Terminal width and height must be positive")
         self.width = width
         self.height = height
         self.buffer = []

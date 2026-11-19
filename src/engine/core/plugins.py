@@ -1,6 +1,7 @@
 import importlib
 import threading
 import logging
+import importlib.metadata
 from typing import Dict, Iterable, Optional
 
 logger = logging.getLogger("UniversalEngine")
@@ -41,6 +42,23 @@ class PluginManager:
         plugin_class = getattr(module, class_name)
         plugin = plugin_class()
         return self.register(name, plugin)
+
+    def load_entry_points(self, group: str = "logicbox.plugins") -> tuple:
+        loaded = []
+        try:
+            entry_points = importlib.metadata.entry_points()
+            if hasattr(entry_points, "select"):
+                candidates = entry_points.select(group=group)
+            else:
+                candidates = entry_points.get(group, ())
+        except Exception as exc:
+            logger.exception("Failed to enumerate plugin entry points")
+            raise RuntimeError(f"Failed to enumerate plugin entry points: {exc}") from exc
+        for entry_point in candidates:
+            plugin_factory = entry_point.load()
+            plugin = plugin_factory() if callable(plugin_factory) else plugin_factory
+            loaded.append(self.register(entry_point.name, plugin))
+        return tuple(loaded)
 
     def unload(self, name: str) -> bool:
         with self._lock:

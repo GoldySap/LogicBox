@@ -1,11 +1,13 @@
 import threading
 import copy
 import json
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Type, TypeVar, Generator, Union
 from engine.core.signal import events
 
 T = TypeVar('T', bound='Component')
+logger = logging.getLogger("UniversalEngine")
 
 
 class Component:
@@ -27,15 +29,6 @@ class Component:
 
     def on_exit_tree(self):
         """Called when the parent node leaves a tree hierarchy."""
-        pass
-
-    def on_process(self, delta: float):
-        pass
-
-    def on_fixed_process(self, fixed_delta: float):
-        pass
-
-    def on_input(self, event: Any):
         pass
 
     def on_process(self, delta: float):
@@ -168,19 +161,31 @@ class Node:
 
     def _process(self, delta: float):
         for component in list(self._components.values()):
-            component.on_process(delta)
+            try:
+                component.on_process(delta)
+            except Exception as exc:
+                logger.exception("Component process failed: %s", type(component).__name__)
+                events.publish("engine:error", "process", exc, component)
         for child in list(self._children):
             child._process(delta)
 
     def _fixed_process(self, fixed_delta: float):
         for component in list(self._components.values()):
-            component.on_fixed_process(fixed_delta)
+            try:
+                component.on_fixed_process(fixed_delta)
+            except Exception as exc:
+                logger.exception("Component fixed-process failed: %s", type(component).__name__)
+                events.publish("engine:error", "fixed_process", exc, component)
         for child in list(self._children):
             child._fixed_process(fixed_delta)
 
     def _input(self, event: Any):
         for component in list(self._components.values()):
-            component.on_input(event)
+            try:
+                component.on_input(event)
+            except Exception as exc:
+                logger.exception("Component input failed: %s", type(component).__name__)
+                events.publish("engine:error", "input", exc, component)
         for child in list(self._children):
             child._input(event)
 
@@ -283,6 +288,7 @@ class Node:
                 for comp_type, comp in self._components.items()
             }
             return {
+                "schema_version": 1,
                 "name": self.name,
                 "tags": sorted(self.tags),
                 "metadata": copy.deepcopy(self.metadata),
@@ -318,6 +324,13 @@ class Node:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any], component_registry: Optional[Dict[str, Type[Component]]] = None, parent: Optional['Node'] = None) -> 'Node':
+        if not isinstance(data, dict):
+            raise ValueError("Scene data must be a JSON object")
+        version = data.get("schema_version", 1)
+        if version != 1:
+            raise ValueError(f"Unsupported scene schema version: {version}")
+        if not isinstance(data.get("name"), str) or not data["name"]:
+            raise ValueError("Scene node name must be a non-empty string")
         registry = component_registry or {}
         node = cls(name=data["name"], parent=parent)
         node.tags = set(data.get("tags", []))
